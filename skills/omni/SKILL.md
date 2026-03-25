@@ -1,4 +1,3 @@
-
 # Omni Analytics Skill
 
 You are an expert in Omni, a modern BI and semantic modeling platform. When this skill is active, help the user design, build, review, and improve Omni models, topics, dashboards, and queries. Apply best practices from the official Omni documentation.
@@ -88,7 +87,7 @@ The `topics:` field inside model files is **deprecated**. Topics must now be def
 | `views` | Topic-scoped customization of specific views |
 | `ai_fields` | Curates which fields are exposed specifically to AI (separate from `fields`) |
 | `ai_context` | Describes business meaning and intended usage for AI |
-| `sample_queries` | Example questions users can start from |
+| `sample_queries` | Curated example queries shown to users and used as AI context |
 | `access_filters` | Row-level access based on user attributes |
 | `required_access_grants` | Gates access to the entire topic |
 | `default_filters` | Visible default filters that users can remove |
@@ -105,16 +104,19 @@ The `topics:` field inside model files is **deprecated**. Topics must now be def
 ```yaml
 # Enterprise Usage topic
 label: Enterprise Usage
-base_view: monthly_company_usage_summary
-group_label: Usage
-always_where_sql: "${company.entity_type} = 'contract'"
+base_view: silver_prod_usage_and_revenue__monthly_company_usage_summary
+group_label: Enterprise
+always_where_sql: "${silver_prod_mappings_and_consolidations__company_consolidation_full_complete.entity_type} = 'contract'"
 joins:
-  - name: company
-    from: company_consolidation_full_complete
-    sql_on: "${monthly_company_usage_summary.company_name} = ${company.company_name}"
-    relationship: many_to_one
-    type: left_outer
+  silver_prod_mappings_and_consolidations__company_consolidation_full_complete: {}
 ai_context: "Use this topic for analyzing usage patterns of enterprise (contract) customers. Base grain is monthly company-level usage cost."
+sample_queries:
+  active_companies:
+    prompt: "How many active enterprise companies do we have this month?"
+    description: "Count of distinct enterprise companies with usage"
+  top_consumers:
+    prompt: "Which companies consumed the most credits in the last 3 months?"
+    description: "Top credit consumers ranked by total spend"
 ```
 
 ### Topic security
@@ -257,20 +259,44 @@ Use `omni_dimensionalize` for values like account balances that sum across some 
 
 ## Joins
 
-Joins define relationships between views. They are defined in a `relationships` file in the model IDE and referenced in topics.
+Joins in topics are defined as a **map (object), not a list**. Join conditions are resolved from the relationships file automatically — you just declare which views to include by nesting them.
 
-### Join parameters
-- `from` / `to` — the two views being joined
-- `sql_on` — the join condition
-- `relationship` — `many_to_one`, `one_to_one`, `one_to_many`, `many_to_many`
-- `type` — `left`, `inner`, `full_outer`
+### Correct topic join syntax
+```yaml
+# Single join
+joins:
+  view_name: {}
+
+# Multi-hop join (B joins through A)
+joins:
+  view_a:
+    view_b: {}
+
+# Multiple independent joins
+joins:
+  view_a: {}
+  view_b: {}
+
+# No joins explicitly
+joins: {}
+```
+
+### WRONG — do not use list format (this is LookML syntax, not Omni)
+```yaml
+# INCORRECT — will error with "expected object"
+joins:
+  - name: my_view
+    sql_on: "..."
+    relationship: many_to_one
+```
 
 ### Join best practices
+- Join conditions live in the **relationships file**, not in the topic
+- The final view in each join chain requires empty brackets `{}`
 - Use many-to-one joins (fact to dimension); avoid many-to-many
 - Always set `primary_key` on the base view to enable symmetric aggregation
-- Use `type: left_outer` unless inner join is explicitly needed
-- Omni can infer relationships via the UI when cardinality is unknown
-- Even with many joins defined, Omni only brings in the required join path for a given query — but topic sprawl still hurts usability
+- Omni only brings in the required join path for a given query
+- Use `joins: {}` to explicitly specify no joins
 
 ---
 
@@ -405,6 +431,101 @@ required_access_grants: [enterprise_only]
 access_filters:
   - field: orders.region
     user_attribute: region
+```
+
+---
+
+## sample_queries Syntax
+
+`sample_queries` is a **named map** (not a list). Each entry has a key (the query name) and an object value. The `query:` sub-key is required by the schema; `prompt:` and `description:` are optional but strongly recommended for AI.
+
+```yaml
+sample_queries:
+  # Minimal form — prompt only (works in practice)
+  active_customers:
+    prompt: "How many active enterprise customers do we have?"
+
+  # Full form — with query spec and description
+  total_arr:
+    query:
+      fields: [silver_prod_usage_and_revenue__tabs_arr_obligation_monthly.arr]
+      base_view: silver_prod_usage_and_revenue__tabs_arr_obligation_monthly
+      limit: 1000
+    description: "Total ARR across all active enterprise contracts"
+    prompt: "What is total ARR for active enterprise contracts?"
+```
+
+### WRONG — do not use list format
+```yaml
+# INCORRECT — will error with "expected object"
+sample_queries:
+  - "How many active customers?"
+  - "What is total ARR?"
+```
+
+---
+
+## `fields` / `ai_fields` Syntax
+
+`fields` and `ai_fields` are arrays that curate which fields are visible in the topic. Use `all_views.*` to include all, and prefix with `-` to exclude.
+
+```yaml
+fields: [all_views.*, -users.*]
+fields: [all_views.*, -tag:pii]
+ai_fields: [base_view.company_name, base_view.arr, base_view.usage_month]
+```
+
+---
+
+## `access_filters` Syntax
+
+Row-level security — filters rows based on user attribute values. Defined as a list.
+
+```yaml
+access_filters:
+  - field: orders.region
+    user_attribute: user_region
+    values_for_unfiltered: [all]
+```
+
+---
+
+## `views` in Topics (Inline Customization)
+
+Use `views:` inside a topic file to customize dimension/measure labels and add topic-specific measures **without touching the shared view file**. Uses **map format** (not list).
+
+```yaml
+views:
+  view_name:
+    dimensions:
+      field_name:
+        label: Custom Label
+        hidden: true
+      date_field:
+        timeframes: [month, quarter, year]
+        convert_tz: false
+    measures:
+      custom_metric:
+        sql: "${view_name.field}"
+        aggregate_type: sum
+        label: Custom Metric
+        format: usdcurrency
+```
+
+**Important:** `views:` in topic files uses map keys (field name as key), NOT the list format (`- name: ...`) used in shared view files.
+
+**`type: number` is NOT valid inside topic-level `views:` measures.** It is only supported in shared model view files. If you need a derived measure that references other measures, just use `sql:` and omit `type:`. Example:
+```yaml
+# WRONG — will error with "Invalid property name ... type"
+net_movement:
+  sql: "${measure_a} + ${measure_b}"
+  type: number
+  format: usdcurrency
+
+# CORRECT
+net_movement:
+  sql: "${measure_a} + ${measure_b}"
+  format: usdcurrency
 ```
 
 ---
