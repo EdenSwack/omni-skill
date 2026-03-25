@@ -1,0 +1,15 @@
+{
+    "name": "omni-skill",
+    "owner": {
+      "name": "Eden Swack",
+      "email": "edenswack1@gmail.com"
+    },
+    "plugins": [
+      {
+        "name": "omni",
+        "description": "Expert skill for designing, building, and reviewing Omni BI models, topics, dashboards, and queries. Includes best
+  practices from official Omni documentation.",
+        "source": "./"
+      }
+    ]
+  }
